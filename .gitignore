@@ -1,0 +1,15 @@
+.claude
+
+# Build output
+build/
+
+# clangd cache
+.cache/
+
+# Local Claude context
+CLAUDE.md
+
+# Compiled binaries
+*.exe
+*.o
+*.a
