@@ -1,2 +1,4 @@
 echo "Running"
-./build/renderer.exe
+# Windows: ./build/renderer.exe
+# macOS:
+./build/renderer
