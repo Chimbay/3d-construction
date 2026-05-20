@@ -26,10 +26,13 @@ void Camera::normalizeCamera() {
   float yaw = cameraOrientation.x;
   float pitch = cameraOrientation.y;
 
-  cameraN = glm::normalize(glm::vec3(
-      cos(glm::radians(pitch)) * cos(glm::radians(yaw)),
-      sin(glm::radians(pitch)),
-      cos(glm::radians(pitch)) * sin(glm::radians(yaw))));
+  cameraN = glm::normalize(
+      glm::vec3(
+          cos(glm::radians(pitch)) * cos(glm::radians(yaw)),
+          sin(glm::radians(pitch)),
+          cos(glm::radians(pitch)) * sin(glm::radians(yaw))
+      )
+  );
 
   cameraU = glm::normalize(glm::cross(cameraN, worldUp));
   cameraV = glm::cross(cameraU, cameraN);

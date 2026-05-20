@@ -34,7 +34,8 @@ public:
 
   // Mouse look
   /**
-   * @brief Records the click position and snapshots the current orientation as the drag base
+   * @brief Records the click position and snapshots the current orientation as
+   * the drag base
    * @param x Cursor X at moment of click
    * @param y Cursor Y at moment of click
    */
