@@ -1,1 +1,5 @@
 SortIncludes: false
+AlignAfterOpenBracket: BlockIndent
+BreakBeforeBinaryOperators: None
+ContinuationIndentWidth: 4
+ReflowComments: false
