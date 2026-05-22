@@ -1,8 +1,10 @@
 #pragma once
 
 #include "vk_descriptors.h"
+#include "vk_initializers.h"
 #include "vk_pipelines.h"
 #include "vulkan/vulkan_core.h"
+#include <functional>
 #include <vector>
 #include <vk_types.h>
 #include <deletion_queue.h>
@@ -80,6 +82,15 @@ public:
   VkPipeline _gradientPipeline;
   VkPipelineLayout _gradientPipelineLayout;
 
+  // immediate submit structures
+  VkFence _immFence;
+  VkCommandBuffer _immCommandBuffer;
+  VkCommandPool _immCommandPool;
+
+  void immediate_submit(std::function<void(VkCommandBuffer cmd)> &&function);
+
+  void draw_imgui(VkCommandBuffer cmd, VkImageView targetImageView);
+
 private:
   void init_vulkan();
   void init_descriptors();
@@ -89,6 +100,8 @@ private:
 
   void init_pipelines();
   void init_background_pipelines();
+
+  void init_imgui();
 
   void create_swapchain(uint32_t width, uint32_t height);
   void destroy_swapchain();

@@ -24,4 +24,8 @@ VkImageCreateInfo image_create_info(
 VkImageViewCreateInfo imageview_create_info(
     VkFormat format, VkImage image, VkImageAspectFlags aspectFlags
 );
+VkRenderingAttachmentInfo attachment_info(
+    VkImageView view, VkClearValue *clear,
+    VkImageLayout layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+);
 } // namespace vkinit

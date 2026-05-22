@@ -32,8 +32,8 @@ VkFenceCreateInfo vkinit::fence_create_info(VkFenceCreateFlags flags) {
   return info;
 }
 
-VkSemaphoreCreateInfo
-vkinit::semaphore_create_info(VkSemaphoreCreateFlags flags) {
+VkSemaphoreCreateInfo vkinit::semaphore_create_info(VkSemaphoreCreateFlags flags
+) {
   VkSemaphoreCreateInfo info = {};
   info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
   info.pNext = nullptr;
@@ -78,8 +78,8 @@ VkSemaphoreSubmitInfo vkinit::semaphore_submit_info(
 
   return submitInfo;
 }
-VkCommandBufferSubmitInfo
-vkinit::command_buffer_submit_info(VkCommandBuffer cmd) {
+VkCommandBufferSubmitInfo vkinit::command_buffer_submit_info(VkCommandBuffer cmd
+) {
   VkCommandBufferSubmitInfo info{};
   info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
   info.pNext = nullptr;
@@ -109,43 +109,67 @@ VkSubmitInfo2 vkinit::submit_info(
   return info;
 }
 
-VkImageCreateInfo vkinit::image_create_info(VkFormat format, VkImageUsageFlags usageFlags, VkExtent3D extent) {
-    VkImageCreateInfo info = {};
-    info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    info.pNext = nullptr;
-    
-    info.imageType = VK_IMAGE_TYPE_2D;
-    
-    info.format = format;
-    info.extent = extent;
-    
-    info.mipLevels = 1;
-    info.arrayLayers = 1;
-    
-    // For MSAA, we will not be using it by default, so default it to 1 sample per pixel.
-    info.samples = VK_SAMPLE_COUNT_1_BIT;
-    
-    // Optimal tiling, which means the image is stored on the best gpu format
-    info.tiling = VK_IMAGE_TILING_OPTIMAL;
-    info.usage = usageFlags;
-    
-    return info;
+VkImageCreateInfo vkinit::image_create_info(
+    VkFormat format, VkImageUsageFlags usageFlags, VkExtent3D extent
+) {
+  VkImageCreateInfo info = {};
+  info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  info.pNext = nullptr;
+
+  info.imageType = VK_IMAGE_TYPE_2D;
+
+  info.format = format;
+  info.extent = extent;
+
+  info.mipLevels = 1;
+  info.arrayLayers = 1;
+
+  // For MSAA, we will not be using it by default, so default it to 1 sample per pixel.
+  info.samples = VK_SAMPLE_COUNT_1_BIT;
+
+  // Optimal tiling, which means the image is stored on the best gpu format
+  info.tiling = VK_IMAGE_TILING_OPTIMAL;
+  info.usage = usageFlags;
+
+  return info;
 }
 
-VkImageViewCreateInfo vkinit::imageview_create_info(VkFormat format, VkImage image, VkImageAspectFlags aspectFlags) {
-    // Build an image-view for the depth image to use for rendering
-    VkImageViewCreateInfo info = {};
-    info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    info.pNext = nullptr;
-    
-    info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    info.image = image;
-    info.format = format;
-    info.subresourceRange.baseMipLevel = 0;
-    info.subresourceRange.levelCount = 1;
-    info.subresourceRange.baseArrayLayer = 0;
-    info.subresourceRange.layerCount = 1;
-    info.subresourceRange.aspectMask = aspectFlags;
-    
-    return info;
+VkImageViewCreateInfo vkinit::imageview_create_info(
+    VkFormat format, VkImage image, VkImageAspectFlags aspectFlags
+) {
+  // Build an image-view for the depth image to use for rendering
+  VkImageViewCreateInfo info = {};
+  info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  info.pNext = nullptr;
+
+  info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  info.image = image;
+  info.format = format;
+  info.subresourceRange.baseMipLevel = 0;
+  info.subresourceRange.levelCount = 1;
+  info.subresourceRange.baseArrayLayer = 0;
+  info.subresourceRange.layerCount = 1;
+  info.subresourceRange.aspectMask = aspectFlags;
+
+  return info;
+}
+
+VkRenderingAttachmentInfo vkinit::attachment_info(
+    VkImageView view, VkClearValue *clear, VkImageLayout layout
+) {
+  VkRenderingAttachmentInfo colorAttachment{
+      .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+      .pNext = nullptr,
+      .imageView = view,
+      .imageLayout = layout,
+      .loadOp =
+          clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
+      .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+  };
+
+  if (clear) {
+    colorAttachment.clearValue = *clear;
+  }
+
+  return colorAttachment;
 }
