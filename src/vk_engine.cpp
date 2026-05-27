@@ -1,5 +1,6 @@
 #include "vk_descriptors.h"
 #include "vk_pipelines.h"
+#include <iostream>
 #define VMA_IMPLEMENTATION
 #include "vk_mem_alloc.h"
 
@@ -144,16 +145,27 @@ void VulkanEngine::draw() {
       _swapchainExtent
   );
 
+  // Set swapchain image layout to Attachment Optimal so we can draw imgui
+  vkutil::transition_image(
+      cmd, _swapchainImages[swapchainImageIndex],
+      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+  );
+
+  // Draw imgui into the swapchain image
+  draw_imgui(cmd, _swapchainImageViews[swapchainImageIndex]);
+
   // Set swapchain image layout to Present so we can show it on screen
   vkutil::transition_image(
       cmd, _swapchainImages[swapchainImageIndex],
-      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
   );
 
+  // Finalize the command buffer (no more commands, but it can now be executed)
   VK_CHECK(vkEndCommandBuffer(cmd));
 
   // Prepare the submission to the queue.
-  // We want to wait on the _presentSemaphore, as that semaphore is signaled when the swapchain is ready
+  // We want to wait on the _swapchainSemaphore, as that is signaled when the swapchain is ready
   // We will signal the _renderSemaphore, to signal that rendering has finished
 
   VkCommandBufferSubmitInfo cmdinfo = vkinit::command_buffer_submit_info(cmd);
@@ -191,53 +203,26 @@ void VulkanEngine::draw() {
 
   // Increase the number of frames drawn
   _frameNumber++;
-
-  // execute a copy from the draw image into the swapchain
-  vkutil::copy_image_to_image(
-      cmd, _drawImage.image, _swapchainImages[swapchainImageIndex], _drawExtent,
-      _swapchainExtent
-  );
-
-  // set swapchain image layout to Attachment Optimal so we can draw it
-  vkutil::transition_image(
-      cmd, _swapchainImages[swapchainImageIndex],
-      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-  );
-
-  //draw imgui into the swapchain image
-  draw_imgui(cmd, _swapchainImageViews[swapchainImageIndex]);
-
-  // set swapchain image layout to Present so we can draw it
-  vkutil::transition_image(
-      cmd, _swapchainImages[swapchainImageIndex],
-      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-  );
-
-  //finalize the command buffer (we can no longer add commands, but it can now be executed)
-  VK_CHECK(vkEndCommandBuffer(cmd));
 }
 
 void VulkanEngine::draw_background(VkCommandBuffer cmd) {
-  // Make a clear-color from frame number. This will flash with a 120 frame period.
+  ComputeEffect &effect = backgroundEffects[currentBackgroundEffect];
 
-  VkClearColorValue clearValue;
-  float flash = std::abs(std::sin(_frameNumber / 120.f));
-  clearValue = {{0.0f, 0.0f, flash, 1.0f}};
+  // bind the selected background compute pipeline
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, effect.pipeline);
 
-  VkImageSubresourceRange clearRange =
-      vkinit::image_subresource_range(VK_IMAGE_ASPECT_COLOR_BIT);
-
-  // bind the gradient drawing compute pipeline
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, _gradientPipeline);
-
-  // bind the descriptor set containing the draw image for the compute pipelien
+  // bind the descriptor set containing the draw image for the compute pipeline
   vkCmdBindDescriptorSets(
       cmd, VK_PIPELINE_BIND_POINT_COMPUTE, _gradientPipelineLayout, 0, 1,
       &_drawImageDescriptors, 0, nullptr
   );
 
-  // execute the compile pipeline dispatch. We are using 16x16 workgroup size so we need to divide by it
+  vkCmdPushConstants(
+      cmd, _gradientPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+      sizeof(ComputePushConstants), &effect.data
+  );
+
+  // execute the compute pipeline dispatch. 16x16 workgroup size, so divide by it
   vkCmdDispatch(
       cmd, std::ceil(_drawExtent.width / 16.0),
       std::ceil(_drawExtent.height / 16.0), 1
@@ -276,8 +261,26 @@ void VulkanEngine::run() {
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
 
+    if (ImGui::Begin("background")) {
+      ComputeEffect &selected = backgroundEffects[currentBackgroundEffect];
+
+      ImGui::Text("Selected effect: ", selected.name);
+
+      ImGui::SliderInt(
+          "Effect index", &currentBackgroundEffect, 0,
+          backgroundEffects.size() - 1
+      );
+
+      ImGui::InputFloat4("data1", (float *)&selected.data.data1);
+      ImGui::InputFloat4("data2", (float *)&selected.data.data2);
+      ImGui::InputFloat4("data3", (float *)&selected.data.data3);
+      ImGui::InputFloat4("data4", (float *)&selected.data.data4);
+    }
+
     // some imgui UI to test
     ImGui::ShowDemoWindow();
+
+    ImGui::End();
 
     // make imgui calculate internal draw structures
     ImGui::Render();
@@ -408,6 +411,7 @@ void VulkanEngine::create_swapchain(uint32_t width, uint32_t height) {
               .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR})
           // use vsync present mode
           .set_desired_present_mode(VK_PRESENT_MODE_FIFO_KHR)
+
           .set_desired_extent(width, height)
           .add_image_usage_flags(VK_IMAGE_USAGE_TRANSFER_DST_BIT)
           .build()
@@ -539,6 +543,7 @@ void VulkanEngine::init_descriptors() {
 }
 
 void VulkanEngine::init_pipelines() { init_background_pipelines(); }
+
 void VulkanEngine::init_background_pipelines() {
   VkPipelineLayoutCreateInfo computeLayout{
       .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -547,23 +552,38 @@ void VulkanEngine::init_background_pipelines() {
       .pSetLayouts = &_drawImageDescriptorLayout,
   };
 
+  VkPushConstantRange pushConstant{
+      .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+      .size = sizeof(ComputePushConstants),
+      .offset = 0,
+  };
+
+  computeLayout.pPushConstantRanges = &pushConstant;
+  computeLayout.pushConstantRangeCount = 1;
+
   VK_CHECK(vkCreatePipelineLayout(
       _device, &computeLayout, nullptr, &_gradientPipelineLayout
   ));
 
-  VkShaderModule computeDrawShader;
-
+  VkShaderModule gradientShader;
   if (!vkutil::load_shader_module(
-          "src/shaders/gradient.comp.spv", _device, &computeDrawShader
+          "src/shaders/gradient_color.comp.spv", _device, &gradientShader
       )) {
-    fmt::print("Error when building the computer shader \n");
+    fmt::print("Error when building the compute shader \n");
+  }
+
+  VkShaderModule skyShader;
+  if (!vkutil::load_shader_module(
+          "src/shaders/sky.comp.spv", _device, &skyShader
+      )) {
+    fmt::print("Error when building the compute shader \n");
   }
 
   VkPipelineShaderStageCreateInfo stageinfo{
       .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
       .pNext = nullptr,
       .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-      .module = computeDrawShader,
+      .module = gradientShader,
       .pName = "main",
   };
 
@@ -574,16 +594,40 @@ void VulkanEngine::init_background_pipelines() {
       .layout = _gradientPipelineLayout,
   };
 
+  ComputeEffect gradient = {
+      .name = "gradient", .layout = _gradientPipelineLayout, .data = {}};
+
+  // default colors
+  gradient.data.data1 = glm::vec4(1, 0, 0, 1);
+  gradient.data.data2 = glm::vec4(0, 0, 1, 1);
+
   VK_CHECK(vkCreateComputePipelines(
       _device, VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr,
-      &_gradientPipeline
+      &gradient.pipeline
   ));
 
-  vkDestroyShaderModule(_device, computeDrawShader, nullptr);
+  // change the shader module only to create the sky shader
+  computePipelineCreateInfo.stage.module = skyShader;
 
-  _mainDeletionQueue.push_function([&]() {
+  ComputeEffect sky = {
+      .name = "sky", .layout = _gradientPipelineLayout, .data = {}};
+  sky.data.data1 = glm::vec4(0.1, 0.2, 0.4, 0.97);
+
+  VK_CHECK(vkCreateComputePipelines(
+      _device, VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr,
+      &sky.pipeline
+  ));
+
+  // add the 2 background effects into the array
+  backgroundEffects.push_back(gradient);
+  backgroundEffects.push_back(sky);
+
+  vkDestroyShaderModule(_device, gradientShader, nullptr);
+  vkDestroyShaderModule(_device, skyShader, nullptr);
+  _mainDeletionQueue.push_function([=]() {
     vkDestroyPipelineLayout(_device, _gradientPipelineLayout, nullptr);
-    vkDestroyPipeline(_device, _gradientPipeline, nullptr);
+    vkDestroyPipeline(_device, sky.pipeline, nullptr);
+    vkDestroyPipeline(_device, gradient.pipeline, nullptr);
   });
 }
 
