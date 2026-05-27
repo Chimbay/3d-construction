@@ -1,13 +1,28 @@
 #pragma once
 
+#include "glm/ext/vector_float4.hpp"
 #include "vk_descriptors.h"
-#include "vk_initializers.h"
-#include "vk_pipelines.h"
 #include "vulkan/vulkan_core.h"
 #include <functional>
 #include <vector>
 #include <vk_types.h>
 #include <deletion_queue.h>
+
+struct ComputePushConstants {
+  glm::vec4 data1;
+  glm::vec4 data2;
+  glm::vec4 data3;
+  glm::vec4 data4;
+};
+
+struct ComputeEffect {
+  const char *name;
+
+  VkPipeline pipeline;
+  VkPipelineLayout layout;
+
+  ComputePushConstants data;
+};
 
 struct FrameData {
   VkCommandPool _commandPool;
@@ -35,7 +50,7 @@ public:
   bool _isInitialized{false};
   int _frameNumber{0};
   bool stop_rendering{false};
-  VkExtent2D _windowExtent{256, 256};
+  VkExtent2D _windowExtent{800, 800};
   struct SDL_Window *_window{nullptr};
   DeletionQueue _mainDeletionQueue;
 
@@ -51,6 +66,10 @@ public:
   VkDevice _device;
   // Vulkan window surface
   VkSurfaceKHR _surface;
+
+  // Compute effect
+  std::vector<ComputeEffect> backgroundEffects;
+  int currentBackgroundEffect{0};
 
   // initializes everything in the engine
   void init();
