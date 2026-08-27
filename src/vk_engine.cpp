@@ -1,6 +1,10 @@
 #include "vk_descriptors.h"
 #include "vk_pipelines.h"
+#include "ply_loader.h"
+#include <algorithm>
+#include <cstring>
 #include <iostream>
+#include <limits>
 #define VMA_IMPLEMENTATION
 #include "vk_mem_alloc.h"
 
@@ -53,6 +57,7 @@ void VulkanEngine::init() {
   init_sync_structures();
   init_descriptors();
   init_pipelines();
+  init_splat_pipeline();
   init_imgui();
 
   _isInitialized = true;
@@ -206,6 +211,12 @@ void VulkanEngine::draw() {
 }
 
 void VulkanEngine::draw_background(VkCommandBuffer cmd) {
+  // If a PLY is loaded, render it instead of the gradient effects.
+  if (_gaussianCount > 0 && _splatPipeline != VK_NULL_HANDLE) {
+    draw_splats(cmd);
+    return;
+  }
+
   ComputeEffect &effect = backgroundEffects[currentBackgroundEffect];
 
   // bind the selected background compute pipeline
@@ -237,18 +248,34 @@ void VulkanEngine::run() {
   while (!bQuit) {
     // Handle events in the queue
     while (SDL_PollEvent(&e) != 0) {
-      // User closes the window
-      if (e.type == SDL_QUIT)
-        bQuit = true;
+      if (e.type == SDL_QUIT) bQuit = true;
 
       if (e.type == SDL_WINDOWEVENT) {
-        if (e.window.event == SDL_WINDOWEVENT_MINIMIZED)
-          stop_rendering = true;
-        if (e.window.event == SDL_WINDOWEVENT_RESTORED)
-          stop_rendering = false;
+        if (e.window.event == SDL_WINDOWEVENT_MINIMIZED) stop_rendering = true;
+        if (e.window.event == SDL_WINDOWEVENT_RESTORED)  stop_rendering = false;
       }
 
-      // Send SDL event to imgui for handling
+      // Drag and drop a .ply onto the window
+      if (e.type == SDL_DROPFILE) {
+        std::string path = e.drop.file;
+        SDL_free(e.drop.file);
+        load_ply(path);
+        _plyPathInput = path;
+      }
+
+      // Camera input — but only when ImGui doesn't want the mouse
+      ImGuiIO &io = ImGui::GetIO();
+      if (!io.WantCaptureMouse) {
+        if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT)
+          _mouseDragging = true;
+        if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT)
+          _mouseDragging = false;
+        if (e.type == SDL_MOUSEMOTION && _mouseDragging)
+          _camera.rotate(float(e.motion.xrel), float(e.motion.yrel));
+        if (e.type == SDL_MOUSEWHEEL)
+          _camera.zoom(float(e.wheel.y));
+      }
+
       ImGui_ImplSDL2_ProcessEvent(&e);
     }
     if (stop_rendering) {
@@ -261,26 +288,73 @@ void VulkanEngine::run() {
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
 
-    if (ImGui::Begin("background")) {
-      ComputeEffect &selected = backgroundEffects[currentBackgroundEffect];
+    if (ImGui::Begin("Splat Viewer")) {
+      // Resize the InputText buffer if the path string outgrows it
+      if (_plyPathInput.capacity() < 512) _plyPathInput.reserve(512);
+      ImGui::InputText("PLY path", _plyPathInput.data(), _plyPathInput.capacity());
+      ImGui::SameLine();
+      if (ImGui::Button("Load")) {
+        // InputText writes through the buffer pointer; sync the string length.
+        _plyPathInput = std::string(_plyPathInput.c_str());
+        if (!_plyPathInput.empty()) load_ply(_plyPathInput);
+      }
+      ImGui::TextUnformatted("(or drag a .ply onto the window)");
+      ImGui::Separator();
+      ImGui::Text("Gaussians loaded: %u", _gaussianCount);
+      ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
+      ImGui::SliderInt("Point size", &_splatPointSize, 0, 8);
+      ImGui::SliderFloat("Camera smoothing", &_camera.smoothingRate, 1.0f, 40.0f);
+      if (_gaussianCount > 0) {
+        ImGui::Text("Camera target: %.2f %.2f %.2f",
+                    _camera.target.x, _camera.target.y, _camera.target.z);
+        ImGui::Text("Radius: %.2f", _camera.radius);
+      }
+    }
+    ImGui::End();
 
-      ImGui::Text("Selected effect: ", selected.name);
-
-      ImGui::SliderInt(
-          "Effect index", &currentBackgroundEffect, 0,
-          backgroundEffects.size() - 1
-      );
-
-      ImGui::InputFloat4("data1", (float *)&selected.data.data1);
-      ImGui::InputFloat4("data2", (float *)&selected.data.data2);
-      ImGui::InputFloat4("data3", (float *)&selected.data.data3);
-      ImGui::InputFloat4("data4", (float *)&selected.data.data4);
+    // Background effects window (only useful when no PLY is loaded)
+    if (_gaussianCount == 0) {
+      if (ImGui::Begin("background")) {
+        ComputeEffect &selected = backgroundEffects[currentBackgroundEffect];
+        ImGui::Text("Selected effect: %s", selected.name);
+        ImGui::SliderInt(
+            "Effect index", &currentBackgroundEffect, 0,
+            int(backgroundEffects.size()) - 1
+        );
+        ImGui::InputFloat4("data1", (float *)&selected.data.data1);
+        ImGui::InputFloat4("data2", (float *)&selected.data.data2);
+        ImGui::InputFloat4("data3", (float *)&selected.data.data3);
+        ImGui::InputFloat4("data4", (float *)&selected.data.data4);
+      }
+      ImGui::End();  // must always pair with Begin, even if Begin returned false
     }
 
-    // some imgui UI to test
-    ImGui::ShowDemoWindow();
+    // WASD navigates through the scene, Q/E moves up/down.
+    // Poll per-frame for smooth continuous motion.
+    {
+      ImGuiIO &io = ImGui::GetIO();
+      float dt = io.DeltaTime;
+      if (!io.WantCaptureKeyboard) {
+        const Uint8 *keys = SDL_GetKeyboardState(nullptr);
+        float speed = 0.5f * dt;
+        if (keys[SDL_SCANCODE_W]) _camera.move( speed, 0,      0);
+        if (keys[SDL_SCANCODE_S]) _camera.move(-speed, 0,      0);
+        if (keys[SDL_SCANCODE_A]) _camera.move( 0,    -speed,  0);
+        if (keys[SDL_SCANCODE_D]) _camera.move( 0,     speed,  0);
+        if (keys[SDL_SCANCODE_E]) _camera.move( 0,     0,      speed);
+        if (keys[SDL_SCANCODE_Q]) _camera.move( 0,     0,     -speed);
 
-    ImGui::End();
+        // Arrow keys rotate the camera (equivalent to mouse drag).
+        // rotate() takes a pixel delta, so scale a per-second rate by dt.
+        float rotRate = 300.0f * dt;
+        if (keys[SDL_SCANCODE_RIGHT]) _camera.rotate( rotRate, 0);
+        if (keys[SDL_SCANCODE_LEFT])  _camera.rotate(-rotRate, 0);
+        if (keys[SDL_SCANCODE_UP])    _camera.rotate(0, -rotRate);
+        if (keys[SDL_SCANCODE_DOWN])  _camera.rotate(0,  rotRate);
+      }
+      // Advance the camera smoothing so rendered state eases toward input
+      _camera.tick(dt);
+    }
 
     // make imgui calculate internal draw structures
     ImGui::Render();
@@ -500,9 +574,10 @@ void VulkanEngine::init_sync_structures() {
 }
 
 void VulkanEngine::init_descriptors() {
-  // create a descriptor pool that will hold 10 sets with 1 image each
+  // pool sized for both compute background (storage image) and splat (storage image + storage buffer)
   std::vector<DescriptorAllocator::PoolSizeRatio> sizes = {
-      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}};
+      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
 
   globalDescriptorAllocator.init_pool(_device, 10, sizes);
 
@@ -629,6 +704,207 @@ void VulkanEngine::init_background_pipelines() {
     vkDestroyPipeline(_device, sky.pipeline, nullptr);
     vkDestroyPipeline(_device, gradient.pipeline, nullptr);
   });
+}
+
+AllocatedBuffer VulkanEngine::create_buffer(size_t size, VkBufferUsageFlags usage) {
+  VkBufferCreateInfo bufferInfo = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  bufferInfo.size = size;
+  bufferInfo.usage = usage;
+  bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+  // Host-visible + GPU-readable. On Apple Silicon this is unified memory; on
+  // dedicated GPUs it's slower but fine for an upload-once buffer.
+  VmaAllocationCreateInfo allocInfo{};
+  allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+  allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
+                    VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+  AllocatedBuffer buf{};
+  VK_CHECK(vmaCreateBuffer(
+      _allocator, &bufferInfo, &allocInfo, &buf.buffer, &buf.allocation, &buf.info
+  ));
+  return buf;
+}
+
+void VulkanEngine::destroy_buffer(AllocatedBuffer &buf) {
+  if (buf.buffer == VK_NULL_HANDLE) return;
+  vmaDestroyBuffer(_allocator, buf.buffer, buf.allocation);
+  buf = {};
+}
+
+void VulkanEngine::init_splat_pipeline() {
+  // Descriptor layout: binding 0 = storage image (draw image), binding 1 = storage buffer (gaussians)
+  {
+    DescriptorLayoutBuilder builder;
+    builder.add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+    builder.add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+    _splatDescriptorLayout = builder.build(_device, VK_SHADER_STAGE_COMPUTE_BIT);
+  }
+
+  // Allocate the descriptor set. We'll write the storage image now (it doesn't
+  // change for the lifetime of the engine) and the storage buffer in load_ply().
+  _splatDescriptors =
+      globalDescriptorAllocator.allocate(_device, _splatDescriptorLayout);
+
+  VkDescriptorImageInfo imgInfo{};
+  imgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+  imgInfo.imageView = _drawImage.imageView;
+
+  VkWriteDescriptorSet imgWrite = {
+      .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+      .pNext = nullptr,
+      .dstSet = _splatDescriptors,
+      .dstBinding = 0,
+      .descriptorCount = 1,
+      .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+      .pImageInfo = &imgInfo,
+  };
+  vkUpdateDescriptorSets(_device, 1, &imgWrite, 0, nullptr);
+
+  // Pipeline layout with push constants for the camera matrix + metadata
+  VkPushConstantRange pushConstant{
+      .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+      .offset = 0,
+      .size = sizeof(SplatPushConstants),
+  };
+
+  VkPipelineLayoutCreateInfo layoutInfo{
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+      .pNext = nullptr,
+      .setLayoutCount = 1,
+      .pSetLayouts = &_splatDescriptorLayout,
+      .pushConstantRangeCount = 1,
+      .pPushConstantRanges = &pushConstant,
+  };
+  VK_CHECK(vkCreatePipelineLayout(
+      _device, &layoutInfo, nullptr, &_splatPipelineLayout
+  ));
+
+  VkShaderModule splatShader;
+  if (!vkutil::load_shader_module(
+          "src/shaders/splat.comp.spv", _device, &splatShader
+      )) {
+    fmt::print("Error building splat compute shader\n");
+    return;
+  }
+
+  VkPipelineShaderStageCreateInfo stage{
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+      .pNext = nullptr,
+      .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+      .module = splatShader,
+      .pName = "main",
+  };
+
+  VkComputePipelineCreateInfo pipelineInfo{
+      .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+      .pNext = nullptr,
+      .stage = stage,
+      .layout = _splatPipelineLayout,
+  };
+
+  VK_CHECK(vkCreateComputePipelines(
+      _device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &_splatPipeline
+  ));
+
+  vkDestroyShaderModule(_device, splatShader, nullptr);
+
+  _mainDeletionQueue.push_function([this]() {
+    vkDestroyPipeline(_device, _splatPipeline, nullptr);
+    vkDestroyPipelineLayout(_device, _splatPipelineLayout, nullptr);
+    vkDestroyDescriptorSetLayout(_device, _splatDescriptorLayout, nullptr);
+    if (_gaussianBuffer.buffer != VK_NULL_HANDLE) {
+      vmaDestroyBuffer(
+          _allocator, _gaussianBuffer.buffer, _gaussianBuffer.allocation
+      );
+    }
+  });
+}
+
+void VulkanEngine::load_ply(const std::string &path) {
+  auto points = load_3dgs_ply(path);
+  if (points.empty()) return;
+
+  // Wait for GPU to finish so we can safely replace the buffer mid-program.
+  vkDeviceWaitIdle(_device);
+
+  // Free the previous buffer if any.
+  destroy_buffer(_gaussianBuffer);
+
+  // Allocate GPU-visible buffer and memcpy directly into mapped memory.
+  size_t bytes = points.size() * sizeof(GaussianPoint);
+  _gaussianBuffer = create_buffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+  std::memcpy(_gaussianBuffer.info.pMappedData, points.data(), bytes);
+  _gaussianCount = static_cast<uint32_t>(points.size());
+
+  // Update descriptor set binding 1 to point at the new buffer.
+  VkDescriptorBufferInfo bufInfo{};
+  bufInfo.buffer = _gaussianBuffer.buffer;
+  bufInfo.offset = 0;
+  bufInfo.range = bytes;
+
+  VkWriteDescriptorSet bufWrite = {
+      .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+      .pNext = nullptr,
+      .dstSet = _splatDescriptors,
+      .dstBinding = 1,
+      .descriptorCount = 1,
+      .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+      .pBufferInfo = &bufInfo,
+  };
+  vkUpdateDescriptorSets(_device, 1, &bufWrite, 0, nullptr);
+
+  // Fit the camera around the model — compute centroid + bounding radius.
+  glm::vec3 minP(std::numeric_limits<float>::max());
+  glm::vec3 maxP(std::numeric_limits<float>::lowest());
+  for (const auto &p : points) {
+    minP = glm::min(minP, glm::vec3(p.position));
+    maxP = glm::max(maxP, glm::vec3(p.position));
+  }
+  glm::vec3 center = 0.5f * (minP + maxP);
+  float boundsRadius = 0.5f * glm::length(maxP - minP);
+
+  _camera.target_to = center;
+  _camera.radius_to = std::max(boundsRadius * 2.0f, 0.5f);
+  _camera.yaw_to = 0.0f;
+  _camera.pitch_to = 0.0f;
+  _camera.snap();  // teleport, don't ease in from the old view
+}
+
+void VulkanEngine::draw_splats(VkCommandBuffer cmd) {
+  // Clear the draw image first by binding the splat pipeline over a black background.
+  // We rely on the fact that draw_background runs after the draw image is transitioned
+  // to GENERAL, but the previous frame's data is still there. Clear it explicitly.
+  VkClearColorValue clearValue{{0.0f, 0.0f, 0.0f, 1.0f}};
+  VkImageSubresourceRange clearRange =
+      vkinit::image_subresource_range(VK_IMAGE_ASPECT_COLOR_BIT);
+  vkCmdClearColorImage(
+      cmd, _drawImage.image, VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &clearRange
+  );
+
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, _splatPipeline);
+  vkCmdBindDescriptorSets(
+      cmd, VK_PIPELINE_BIND_POINT_COMPUTE, _splatPipelineLayout, 0, 1,
+      &_splatDescriptors, 0, nullptr
+  );
+
+  float aspect = float(_drawExtent.width) / float(_drawExtent.height);
+
+  SplatPushConstants pc{};
+  pc.viewProj = _camera.view_projection(aspect);
+  pc.pointCount = static_cast<int>(_gaussianCount);
+  pc.pointSize = _splatPointSize;
+  pc.imageWidth = static_cast<int>(_drawExtent.width);
+  pc.imageHeight = static_cast<int>(_drawExtent.height);
+
+  vkCmdPushConstants(
+      cmd, _splatPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+      sizeof(SplatPushConstants), &pc
+  );
+
+  // 256 threads per workgroup, one thread per Gaussian.
+  uint32_t groupCount = (_gaussianCount + 255) / 256;
+  vkCmdDispatch(cmd, groupCount, 1, 1);
 }
 
 void VulkanEngine::immediate_submit(

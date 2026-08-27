@@ -26,6 +26,12 @@ struct Allocatedimage {
     VkExtent3D imageExtent;
     VkFormat imageFormat;
 };
+
+struct AllocatedBuffer {
+    VkBuffer buffer;
+    VmaAllocation allocation;
+    VmaAllocationInfo info;
+};
 #define VK_CHECK(x)                                                            \
   do {                                                                         \
     VkResult err = x;                                                          \
