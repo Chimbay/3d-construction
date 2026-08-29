@@ -19,11 +19,13 @@ add_subdirectory(libraries)
 add_executable(program
     src/main.cpp
     src/components/camera.cpp
+    src/components/orbit_camera.cpp
     src/vk_engine.cpp
     src/vk_initializers.cpp
     src/vk_images.cpp
     src/vk_descriptors.cpp
     src/vk_pipelines.cpp
+    src/ply_loader.cpp
 )
 
 target_include_directories(program PRIVATE src)

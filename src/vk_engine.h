@@ -1,9 +1,12 @@
 #pragma once
 
+#include "components/orbit_camera.h"
 #include "glm/ext/vector_float4.hpp"
 #include "vk_descriptors.h"
 #include "vulkan/vulkan_core.h"
 #include <functional>
+#include <glm/mat4x4.hpp>
+#include <string>
 #include <vector>
 #include <vk_types.h>
 #include <deletion_queue.h>
@@ -13,6 +16,14 @@ struct ComputePushConstants {
   glm::vec4 data2;
   glm::vec4 data3;
   glm::vec4 data4;
+};
+
+struct SplatPushConstants {
+  glm::mat4 viewProj;
+  int       pointCount;
+  int       pointSize;
+  int       imageWidth;
+  int       imageHeight;
 };
 
 struct ComputeEffect {
@@ -50,7 +61,7 @@ public:
   bool _isInitialized{false};
   int _frameNumber{0};
   bool stop_rendering{false};
-  VkExtent2D _windowExtent{800, 800};
+  VkExtent2D _windowExtent{1280, 800};
   struct SDL_Window *_window{nullptr};
   DeletionQueue _mainDeletionQueue;
 
@@ -110,6 +121,21 @@ public:
 
   void draw_imgui(VkCommandBuffer cmd, VkImageView targetImageView);
 
+  // Gaussian splat viewer state
+  OrbitCamera           _camera;
+  AllocatedBuffer       _gaussianBuffer{};
+  uint32_t              _gaussianCount = 0;
+  VkPipeline            _splatPipeline = VK_NULL_HANDLE;
+  VkPipelineLayout      _splatPipelineLayout = VK_NULL_HANDLE;
+  VkDescriptorSet       _splatDescriptors = VK_NULL_HANDLE;
+  VkDescriptorSetLayout _splatDescriptorLayout = VK_NULL_HANDLE;
+  int                   _splatPointSize = 1;
+  std::string           _plyPathInput;  // ImGui InputText buffer
+  bool                  _mouseDragging = false;
+
+  void load_ply(const std::string &path);
+  void draw_splats(VkCommandBuffer cmd);
+
 private:
   void init_vulkan();
   void init_descriptors();
@@ -119,9 +145,13 @@ private:
 
   void init_pipelines();
   void init_background_pipelines();
+  void init_splat_pipeline();
 
   void init_imgui();
 
   void create_swapchain(uint32_t width, uint32_t height);
   void destroy_swapchain();
+
+  AllocatedBuffer create_buffer(size_t size, VkBufferUsageFlags usage);
+  void            destroy_buffer(AllocatedBuffer &buf);
 };
